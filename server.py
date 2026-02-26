@@ -1,75 +1,61 @@
 from flask import Flask, request, jsonify
-import mercadopago
+import json
 import os
 
 app = Flask(__name__)
 
-sdk = mercadopago.SDK(os.getenv("MERCADO_PAGO_ACCESS_TOKEN"))
+CACHE = "pagamentos.json"
 
-pagamentos_aprovados = {}
-pagamentos_registrados = {}
+def load():
+    if not os.path.exists(CACHE):
+        return {}
+    with open(CACHE) as f:
+        return json.load(f)
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return "OK", 200
-
-
-# 🔹 BOT REGISTRA O PAGAMENTO AQUI
-@app.route("/registrar", methods=["POST"])
-def registrar():
-    data = request.json
-    payment_id = str(data["payment_id"])
-
-    pagamentos_registrados[payment_id] = data
-    return jsonify({"status": "registrado"})
+def save(data):
+    with open(CACHE, "w") as f:
+        json.dump(data, f)
 
 
-# 🔹 MERCADO PAGO CHAMA AQUI
 @app.route("/notify", methods=["POST"])
 def notify():
+
     data = request.json
 
     payment_id = None
 
-    if 'data' in data and 'id' in data['data']:
-        payment_id = str(data['data']['id'])
-    elif 'resource' in data:
-        payment_id = data['resource'].split('/')[-1]
+    if "data" in data:
+        payment_id = str(data["data"]["id"])
 
     if not payment_id:
-        return "OK", 200
+        return "OK"
 
-    payment_info = sdk.payment().get(payment_id)
+    pagamentos = load()
+    pagamentos[payment_id] = data
 
-    if payment_info["status"] != 200:
-        return "OK", 200
+    save(pagamentos)
 
-    payment = payment_info["response"]
-
-    if payment["status"] == "approved":
-        if payment_id in pagamentos_registrados:
-            pagamentos_aprovados[payment_id] = pagamentos_registrados[payment_id]
-
-    return "OK", 200
+    return "OK"
 
 
-# 🔹 BOT CONSULTA AQUI
-@app.route("/pendentes", methods=["GET"])
+@app.route("/pendentes")
 def pendentes():
-    return jsonify(pagamentos_aprovados)
+    return load()
 
 
-# 🔹 BOT CONFIRMA PROCESSAMENTO
 @app.route("/confirmar", methods=["POST"])
 def confirmar():
-    data = request.json
-    payment_id = str(data["payment_id"])
 
-    if payment_id in pagamentos_aprovados:
-        del pagamentos_aprovados[payment_id]
+    pid = request.json["payment_id"]
 
-    return jsonify({"status": "ok"})
+    pagamentos = load()
+
+    if pid in pagamentos:
+        del pagamentos[pid]
+
+    save(pagamentos)
+
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
