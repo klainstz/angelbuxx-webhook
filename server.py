@@ -1,20 +1,20 @@
 from flask import Flask, request, jsonify
-import json
-import os
 
 app = Flask(__name__)
 
-CACHE = "pagamentos.json"
+pagamentos_registrados = {}
+pagamentos_aprovados = {}
 
-def load():
-    if not os.path.exists(CACHE):
-        return {}
-    with open(CACHE) as f:
-        return json.load(f)
 
-def save(data):
-    with open(CACHE, "w") as f:
-        json.dump(data, f)
+@app.route("/registrar", methods=["POST"])
+def registrar():
+
+    data = request.json
+    payment_id = str(data["payment_id"])
+
+    pagamentos_registrados[payment_id] = data
+
+    return {"status": "ok"}
 
 
 @app.route("/notify", methods=["POST"])
@@ -22,40 +22,30 @@ def notify():
 
     data = request.json
 
-    payment_id = None
-
-    if "data" in data:
-        payment_id = str(data["data"]["id"])
-
-    if not payment_id:
+    if "data" not in data:
         return "OK"
 
-    pagamentos = load()
-    pagamentos[payment_id] = data
+    payment_id = str(data["data"]["id"])
 
-    save(pagamentos)
+    if payment_id in pagamentos_registrados:
+        pagamentos_aprovados[payment_id] = pagamentos_registrados[payment_id]
 
     return "OK"
 
 
 @app.route("/pendentes")
 def pendentes():
-    return load()
+    return jsonify(pagamentos_aprovados)
 
 
 @app.route("/confirmar", methods=["POST"])
 def confirmar():
 
-    pid = request.json["payment_id"]
+    payment_id = request.json["payment_id"]
 
-    pagamentos = load()
+    pagamentos_aprovados.pop(payment_id, None)
 
-    if pid in pagamentos:
-        del pagamentos[pid]
-
-    save(pagamentos)
-
-    return jsonify({"ok": True})
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
