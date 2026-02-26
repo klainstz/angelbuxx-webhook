@@ -6,13 +6,26 @@ app = Flask(__name__)
 
 sdk = mercadopago.SDK(os.getenv("MERCADO_PAGO_ACCESS_TOKEN"))
 
-pagamentos_aprovados = []
+pagamentos_aprovados = {}
+pagamentos_registrados = {}
+
 
 @app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
 
 
+# 🔹 BOT REGISTRA O PAGAMENTO AQUI
+@app.route("/registrar", methods=["POST"])
+def registrar():
+    data = request.json
+    payment_id = str(data["payment_id"])
+
+    pagamentos_registrados[payment_id] = data
+    return jsonify({"status": "registrado"})
+
+
+# 🔹 MERCADO PAGO CHAMA AQUI
 @app.route("/notify", methods=["POST"])
 def notify():
     data = request.json
@@ -20,7 +33,7 @@ def notify():
     payment_id = None
 
     if 'data' in data and 'id' in data['data']:
-        payment_id = data['data']['id']
+        payment_id = str(data['data']['id'])
     elif 'resource' in data:
         payment_id = data['resource'].split('/')[-1]
 
@@ -35,23 +48,26 @@ def notify():
     payment = payment_info["response"]
 
     if payment["status"] == "approved":
-        pagamentos_aprovados.append(payment_id)
+        if payment_id in pagamentos_registrados:
+            pagamentos_aprovados[payment_id] = pagamentos_registrados[payment_id]
 
     return "OK", 200
 
 
+# 🔹 BOT CONSULTA AQUI
 @app.route("/pendentes", methods=["GET"])
 def pendentes():
     return jsonify(pagamentos_aprovados)
 
 
+# 🔹 BOT CONFIRMA PROCESSAMENTO
 @app.route("/confirmar", methods=["POST"])
 def confirmar():
     data = request.json
-    payment_id = data.get("payment_id")
+    payment_id = str(data["payment_id"])
 
     if payment_id in pagamentos_aprovados:
-        pagamentos_aprovados.remove(payment_id)
+        del pagamentos_aprovados[payment_id]
 
     return jsonify({"status": "ok"})
 
