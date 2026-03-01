@@ -1,181 +1,92 @@
 """
 AngelBuxx — server.py (Render)
-Usa arquivo JSON para persistir pagamentos entre reinicios do Render.
+Persiste dados em arquivo /tmp. O cog pagamentos.py no bot
+consulta o MP diretamente como backup, então o Render é opcional.
 """
 
-import os
-import json
-import mercadopago
+import os, json, mercadopago
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-
 MP_ACCESS_TOKEN = os.getenv("MERCADO_PAGO_ACCESS_TOKEN")
-DB_FILE = "/tmp/pagamentos.json"
-
+DB_FILE = "/tmp/pag.json"
 
 def _load():
     try:
-        with open(DB_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {"registrados": {}, "aprovados": {}}
+        with open(DB_FILE) as f: return json.load(f)
+    except: return {"r": {}, "a": {}}
 
-def _save(data):
+def _save(d):
     try:
-        with open(DB_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"[save] {e}")
+        with open(DB_FILE, "w") as f: json.dump(d, f)
+    except Exception as e: print(f"[save] {e}")
 
+def _processar(pid_raw):
+    pid = str(pid_raw).strip()
+    db  = _load()
+    print(f"[notify] id={pid} registrados={list(db['r'].keys())}")
+    key = pid if pid in db["r"] else next(
+        (k for k in db["r"] if str(int(k)) == str(int(pid))), None) if pid.isdigit() else None
+    if not key:
+        print(f"[notify] {pid} não registrado")
+        return
+    try:
+        status = mercadopago.SDK(MP_ACCESS_TOKEN).payment().get(key)["response"].get("status","")
+        print(f"[notify] status={status}")
+    except Exception as e:
+        print(f"[notify] erro MP: {e}"); return
+    if status == "approved":
+        db["a"][key] = db["r"][key]; _save(db)
+        print(f"[notify] ✅ aprovado: {key}")
 
 @app.route("/registrar", methods=["POST"])
 def registrar():
-    data       = request.json or {}
-    payment_id = str(data.get("payment_id", "")).strip()
-    if not payment_id:
-        return {"status": "erro", "msg": "payment_id ausente"}, 400
+    d = request.json or {}
+    pid = str(d.get("payment_id","")).strip()
+    if not pid: return {"status":"erro"},400
     db = _load()
-    db["registrados"][payment_id] = {
-        "payment_id":   payment_id,
-        "canal_pag_id": data.get("canal_pag_id"),
-        "guild_id":     data.get("guild_id"),
-    }
+    db["r"][pid] = {"payment_id":pid,"canal_pag_id":d.get("canal_pag_id"),"guild_id":d.get("guild_id")}
     _save(db)
-    print(f"[registrar] ✅ {payment_id}")
-    return {"status": "ok"}
+    print(f"[registrar] {pid}")
+    return {"status":"ok"}
 
-
-def _processar_notify(payment_id_raw):
-    payment_id = str(payment_id_raw).strip()
-    db         = _load()
-    registrados = db.get("registrados", {})
-    aprovados   = db.get("aprovados", {})
-
-    print(f"[notify] Recebido id={payment_id!r}")
-    print(f"[notify] Registrados: {list(registrados.keys())}")
-
-    # Match direto ou por int
-    found_key = None
-    if payment_id in registrados:
-        found_key = payment_id
-    else:
-        try:
-            pid_int = int(payment_id)
-            for k in registrados:
-                if int(k) == pid_int:
-                    found_key = k
-                    break
-        except Exception:
-            pass
-
-    if not found_key:
-        print(f"[notify] ID {payment_id!r} não registrado, ignorando.")
-        return
-
-    try:
-        sdk    = mercadopago.SDK(MP_ACCESS_TOKEN)
-        result = sdk.payment().get(found_key)
-        resp   = result.get("response", {})
-        status = resp.get("status", "")
-        print(f"[notify] Status MP: {status!r}")
-    except Exception as e:
-        print(f"[notify] Erro MP: {e}")
-        return
-
-    if status == "approved":
-        aprovados[found_key] = registrados[found_key]
-        db["aprovados"] = aprovados
-        _save(db)
-        print(f"[notify] ✅ APROVADO: {found_key}")
-
-
-@app.route("/notify", methods=["POST", "GET"])
+@app.route("/notify", methods=["POST","GET"])
+@app.route("/notify/notify", methods=["POST","GET"])
 def notify():
-    print(f"[notify] method={request.method} args={dict(request.args)} body={request.get_data(as_text=True)[:300]}")
-    data       = request.get_json(silent=True) or {}
-    payment_id = None
-
-    if "data" in data and "id" in data["data"]:
-        payment_id = str(data["data"]["id"])
-    elif request.args.get("id"):
-        payment_id = str(request.args.get("id"))
-    elif request.args.get("data.id"):
-        payment_id = str(request.args.get("data.id"))
-    elif "id" in data:
-        payment_id = str(data["id"])
-
-    print(f"[notify] payment_id extraído: {payment_id!r}")
-    if payment_id:
-        _processar_notify(payment_id)
+    print(f"[notify] args={dict(request.args)} body={request.get_data(as_text=True)[:200]}")
+    d   = request.get_json(silent=True) or {}
+    pid = (str(d["data"]["id"]) if "data" in d and "id" in d["data"] else
+           request.args.get("id") or request.args.get("data.id") or
+           str(d["id"]) if "id" in d else None)
+    if pid: _processar(pid)
     return "OK", 200
-
-
-@app.route("/notify/notify", methods=["POST", "GET"])
-def notify_dup():
-    return notify()
-
 
 @app.route("/pendentes")
 def pendentes():
     db = _load()
-    ap = db.get("aprovados", {})
-    print(f"[pendentes] aprovados={list(ap.keys())}")
-    return jsonify(ap)
-
+    print(f"[pendentes] aprovados={list(db['a'].keys())}")
+    return jsonify(db["a"])
 
 @app.route("/confirmar", methods=["POST"])
 def confirmar():
-    data       = request.json or {}
-    payment_id = str(data.get("payment_id", "")).strip()
-    db         = _load()
-    db["aprovados"].pop(payment_id, None)
-    db["registrados"].pop(payment_id, None)
-    _save(db)
-    print(f"[confirmar] Removido: {payment_id}")
-    return {"status": "ok"}
+    pid = str((request.json or {}).get("payment_id","")).strip()
+    db  = _load()
+    db["a"].pop(pid,None); db["r"].pop(pid,None); _save(db)
+    return {"status":"ok"}
 
-
-@app.route("/aprovar/<payment_id>")
-def aprovar_manual(payment_id):
-    """Aprovação manual para testes."""
-    db          = _load()
-    registrados = db.get("registrados", {})
-    aprovados   = db.get("aprovados", {})
-
-    found_key = None
-    if payment_id in registrados:
-        found_key = payment_id
-    else:
-        try:
-            pid_int = int(payment_id)
-            for k in registrados:
-                if int(k) == pid_int:
-                    found_key = k
-                    break
-        except Exception:
-            pass
-
-    if not found_key:
-        return jsonify({"status": "nao_encontrado",
-                        "registrados": list(registrados.keys())}), 404
-
-    aprovados[found_key] = registrados[found_key]
-    db["aprovados"] = aprovados
-    _save(db)
-    return jsonify({"status": "aprovado", "payment_id": found_key})
-
+@app.route("/aprovar/<pid>")
+def aprovar(pid):
+    db = _load()
+    key = pid if pid in db["r"] else next(
+        (k for k in db["r"] if str(int(k))==str(int(pid))), None) if pid.isdigit() else None
+    if not key: return jsonify({"status":"nao_encontrado","registrados":list(db["r"].keys())}),404
+    db["a"][key]=db["r"][key]; _save(db)
+    return jsonify({"status":"aprovado","id":key})
 
 @app.route("/")
 def health():
     db = _load()
-    return jsonify({
-        "status":           "online",
-        "registrados":      len(db.get("registrados", {})),
-        "aprovados":        len(db.get("aprovados", {})),
-        "ids_registrados":  list(db.get("registrados", {}).keys()),
-    })
-
+    return jsonify({"status":"online","registrados":len(db["r"]),"aprovados":len(db["a"]),"ids":list(db["r"].keys())})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
