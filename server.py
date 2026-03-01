@@ -100,6 +100,15 @@ def confirmar():
     return {"status": "ok"}
 
 
+@app.route("/aprovar/<payment_id>", methods=["GET"])
+def aprovar_manual(payment_id):
+    """Rota de teste — aprova manualmente um pagamento registrado."""
+    if payment_id in pagamentos_registrados:
+        pagamentos_aprovados[payment_id] = pagamentos_registrados[payment_id]
+        return {"status": "aprovado", "payment_id": payment_id}
+    return {"status": "nao_encontrado", "registrados": list(pagamentos_registrados.keys())}, 404
+
+
 @app.route("/")
 def health():
     return jsonify({"status": "online",
