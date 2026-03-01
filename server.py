@@ -31,28 +31,42 @@ def registrar():
 
 def _processar_notify(payment_id_raw):
     """Lógica central do notify — chamada por todas as rotas de webhook."""
-    payment_id = str(payment_id_raw)
-    print(f"[notify] Recebido id={payment_id}")
+    payment_id = str(payment_id_raw).strip()
+    print(f"[notify] Recebido id={payment_id!r}")
     print(f"[notify] Registrados: {list(pagamentos_registrados.keys())}")
 
-    if payment_id not in pagamentos_registrados:
-        # Tenta sem/com espaços ou diferenças de formato
-        print(f"[notify] ID {payment_id} não registrado, ignorando.")
+    # Busca flexível: tenta match direto e também sem zeros à esquerda etc
+    found_key = None
+    if payment_id in pagamentos_registrados:
+        found_key = payment_id
+    else:
+        # Tenta converter para int e comparar (resolve diferença de tipo str/int)
+        try:
+            pid_int = int(payment_id)
+            for k in pagamentos_registrados:
+                if int(k) == pid_int:
+                    found_key = k
+                    break
+        except Exception:
+            pass
+
+    if not found_key:
+        print(f"[notify] ID {payment_id!r} não encontrado nos registrados, ignorando.")
         return
 
     try:
         sdk    = mercadopago.SDK(MP_ACCESS_TOKEN)
-        result = sdk.payment().get(payment_id)
+        result = sdk.payment().get(found_key)
         resp   = result.get("response", {})
         status = resp.get("status", "")
-        print(f"[notify] Status MP: {status}")
+        print(f"[notify] Status MP para {found_key}: {status!r}")
     except Exception as e:
         print(f"[notify] Erro MP: {e}")
         return
 
     if status == "approved":
-        pagamentos_aprovados[payment_id] = pagamentos_registrados[payment_id]
-        print(f"[notify] ✅ APROVADO: {payment_id}")
+        pagamentos_aprovados[found_key] = pagamentos_registrados[found_key]
+        print(f"[notify] ✅ APROVADO: {found_key}")
 
 
 @app.route("/notify", methods=["POST", "GET"])
